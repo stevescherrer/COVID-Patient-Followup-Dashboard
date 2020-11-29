@@ -1,4 +1,3 @@
-#
 # This is a Shiny application for bulk texting. You can run the application by clicking
 # the 'Run App' button above.
 #
@@ -15,19 +14,10 @@
 rm(list = ls())
 
 library('shiny')
+source('src/HelperFunctions.R')
 
-##### Import files 
-## Import patient data file
-patient_data = read.csv('data/test_patient_data.csv')
-
-## Import file showing which records have been previously called
-previous_stopping_record = as.numeric(read.csv('data/called_index.csv')[1])
-## Import chat message log
-message_log = read.csv('data/message_log.csv')
 
 ##### Application logic goes here
-source('src/HelperFunctions.R')
-source('src/twilio_credentials.R')
 
 # Define UI for application that draws a histogram
 ui <- fluidPage(
@@ -77,7 +67,7 @@ server = function(input, output) {
     observe({
         autoInvalidate()
         ## Check for an update to the message log
-        updated_log = update_log()
+        updated_log = updateLog()
         ## Compare rows in updated log file to current message log. If tehy're not the same, rerender and update message log
         if (dim(message_log)[1] != dim(updated_log)[1]){
             message_log = updated_log
@@ -95,7 +85,7 @@ server = function(input, output) {
         ## Send formatted input$batch_message to input$batch_size number of patients
         sendBatchTexts(input$batch_message, input$batch_size)
         ## update message log
-        message_log = update_log()
+        message_log = updateLog()
         ## update viewer
         output$tbl = renderDT(
             message_log, options = list(lengthChange = FALSE)
@@ -112,7 +102,7 @@ server = function(input, output) {
         ## Send response message
         tw_send_message(from = sender_number, to = recipient_number, body = input$reply_message)
         ## Update message log
-        message_log = update_log()
+        message_log = updateLog()
         ## update viewer
         output$tbl = renderDT(
             message_log, options = list(lengthChange = FALSE)

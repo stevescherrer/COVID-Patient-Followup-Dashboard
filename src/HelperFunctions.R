@@ -3,6 +3,22 @@
 ## All writes preserved all wrongs traversed
 
 
+
+## Import file showing which records have been previously called
+previous_stopping_record = as.numeric(read.csv('data/called_index.csv')[1])
+## Import chat message log
+message_log = read.csv('data/message_log.csv')
+
+### Import config details
+config = read.csv('src/config.csv', header = FALSE)
+## Import patient data file
+patient_data = read.csv(file.path('data', config[config$V1 == 'PATIENT_DATA_FILE',2]))
+## Set system enviornment variables
+Sys.setenv(TWILIO_SID = config[config$V1 == 'TWILIO_SID',2])
+Sys.setenv(TWILIO_TOKEN = config[config$V1 == 'TWILIO_TOKEN',2])
+# Assign twilio number
+twilio_number = paste('+', config[config$V1 == 'TWILIO_NUMBER',2], sep = '', collapse = '')
+
 ##########################################################
 #################### Workspace Setup #####################
 ##########################################################
@@ -116,7 +132,7 @@ sendBatchTexts = function(generic_message, batch_size){
 
 
 
-update_log = function(){
+updateLog = function(){
   ## Get messages from twilio server
   messages <- tw_get_messages_list(page = 0, page_size = 1000)
   ## Parse each message and add it to message log file
@@ -144,3 +160,5 @@ update_log = function(){
   write.csv(message_log, file = 'data/message_log.csv', row.names = FALSE)
   return(message_log)
 }
+
+

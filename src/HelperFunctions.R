@@ -107,8 +107,10 @@ formatPatientData = function(patient_data){
 
 sendBatchTexts = function(generic_message, batch_size){
   ### Main Function to send text messages to patients
+    ## Updated so batch messages will not go out to the same patient more than once.
   if (i <= nrow(patient_data)){
     for (i in (previous_stopping_record + 1):min((previous_stopping_record + 1 + batch_size), nrow(patient_data))){
+      
       ### Format Messages
         formatted_message = gsub(pattern = '%name%', replacement = formatName(patient_data$patient_name[i]), x = generic_message)
         formatted_message = gsub(pattern = '%clinic%', replacement = formatClinic(patient_data$clinic_location[i]), x = formatted_message)
@@ -119,8 +121,10 @@ sendBatchTexts = function(generic_message, batch_size){
         if (substr(formatted_number, start = 1, stop = 1) != 1){
           formatted_number = paste('1', formatted_number, sep = "", collapse = "")
         }
-        ### Send Message
-        tw_send_message(from = sender_number, to = formatted_number, body = formatted_message)
+        ### Send Message after making sure we haven't already texted this person
+        if (formatted_number %in% message_log$Patient.Number == FALSE){
+          tw_send_message(from = sender_number, to = formatted_number, body = formatted_message)
+        }
     }
     ## Write out current index for keeping track of where in patient data we currently are
     write.csv(i, file = 'data/called_index.csv', row.names = FALSE)

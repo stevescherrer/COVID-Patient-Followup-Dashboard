@@ -1,0 +1,1 @@
+"Hi %name%, this is Dr. Saunders from Starmed Healthcare, you reached out to be tested and I wanted to offer a brief telemedicine visit to check in on you %and_others% regarding any concerns or symptoms you may have as part of this care.  If it's alright, I'll send you a secure encrypted link through Doximity and can meet you %all% shortly.  Would that be ok?"

@@ -3,48 +3,78 @@
 ## All writes preserved all wrongs traversed
 
 
-
-## Import file showing which records have been previously called
-previous_stopping_record = as.numeric(read.csv('data/called_index.csv')[1])
-## Import chat message log
-message_log = read.csv('data/message_log.csv')
-
-### Import config details
-config = read.csv('src/config.csv', header = FALSE)
-## Import patient data file
-patient_data = read.csv(file.path('data', config[config$V1 == 'PATIENT_DATA_FILE',2]))
-## Set system enviornment variables
-Sys.setenv(TWILIO_SID = config[config$V1 == 'TWILIO_SID',2])
-Sys.setenv(TWILIO_TOKEN = config[config$V1 == 'TWILIO_TOKEN',2])
-# Assign twilio number
-twilio_number = paste('+', config[config$V1 == 'TWILIO_NUMBER',2], sep = '', collapse = '')
-
 ##########################################################
 #################### Workspace Setup #####################
 ##########################################################
 
 ### Import principle dependencies
-  ## List of required package dependencies
-  packages = c(
-    'twilio',# tw_send_message()
-    'DT',
-    'beepr'
-  )
-  
-  ## loop to check R library for each dependent package and install if they're not currently in library
-  for (package in packages){
-    if (!require(package, character.only = TRUE)){
-      install.packages(package)
-    }
-    ## Load each package
-    library(package, character.only = TRUE)
+## List of required package dependencies
+packages = c(
+  'twilio',# tw_send_message()
+  'DT',
+  'beepr',
+  'data.table',
+  'googlesheets4',
+  'emojifont'
+)
+
+### The first time you run this application, first run the following commands
+if(!'devtools' %in% installed.packages()){install.packages("devtools")}
+if(!'googlesheets4' %in% installed.packages()){devtools::install_github("tidyverse/googlesheets4")}
+
+## loop to check R library for each dependent package and install if they're not currently in library
+for (package in packages){
+  if (!require(package, character.only = TRUE)){
+    install.packages(package)
   }
+  ## Load each package
+  library(package, character.only = TRUE)
+}
+
+### Import config details
+config = read.csv('src/config.csv', header = FALSE)
+## Set system enviornment variables
+Sys.setenv(TWILIO_SID = config[config$V1 == 'TWILIO_SID',2])
+Sys.setenv(TWILIO_TOKEN = config[config$V1 == 'TWILIO_TOKEN',2])
+
+## Import chat message log
+message_log = read.csv('data/message_log.csv')
+
+# Assign twilio number
+twilio_number = paste('+', config[config$V1 == 'TWILIO_NUMBER',2], sep = '', collapse = '')
+
 
 
 ##########################################################
 #################### Helper Functions ####################
 ##########################################################
+
+importPatientData = function(sheet_date = '11.19'){
+  ## Default sheet date is 11.19 because I know it works
+  patient_data = read_sheet(file.path('data', config[config$V1 == 'PATIENT_DATA_FILE',2]), sheet = sheet_date)
+
+  colnames(patient_data)[which(grepl('Patient Name', colnames(patient_data), fixed = TRUE))] = 'patient_name'
+  colnames(patient_data)[which(grepl('DOB', colnames(patient_data), fixed = TRUE))] = 'dob'
+  colnames(patient_data)[which(grepl('Phone', colnames(patient_data), fixed = TRUE))] = 'number'
   
+  ## Extract patient name from patient_name colum
+  patient_data$name = NA
+  for(i in 1:nrow(patient_data)){
+    if(!is.null(patient_data$patient_name[i][[1]])){
+      patient_data$name[i] = unlist(patient_data$patient_name[i])
+    }
+  }
+  
+  ## Extract patient phonenumber from number colum
+  patient_data$patient_number = NA
+  for(i in 1:nrow(patient_data)){
+    if(!is.null(patient_data$number[i][[1]])){
+      patient_data$patient_number[i] = unlist(patient_data$number[i])
+    }
+  }
+  return(patient_data)
+}
+
 ## Format patient's name
 formatName = function(name){
   ## Split off just first name
@@ -55,23 +85,7 @@ formatName = function(name){
   formatted_name = paste(toupper(substr(formatted_name, start = 1, stop = 1)), substr(formatted_name, start = 2, stop = nchar(formatted_name)), sep = '')
   return (formatted_name)
 }
-# formatName(patient_data$name[1])
-  
-## Format patient's phone number
-formatPhone = function(number){
-  formatted_number = gsub(pattern = "", replacement = "", number)
-  ## add country code (1) to number
-  formatted_number = paste('+1', as.character(formatted_number), sep = "")
-  if (nchar(formatted_number) == 12 & 
-      substr(formatted_number, start = 1, stop = 2) == "+1" & 
-      !is.na(as.numeric(substr(formatted_number, start = 2, stop = nchar(formatted_number))))
-      ){
-  return(formatted_number)
-  } else {
-    print(paste('Phone number ', number, ' could not be formatted correctly.',sep = ""))
-    return (number)
-  }
-}
+
 
 formatClinic = function(clinic){
   # """
@@ -98,45 +112,126 @@ formatClinic = function(clinic){
   return(paste(split_clinic, collapse = ' '))
 }
 
-formatPatientData = function(patient_data){
-  for (i in 1:length(patient_data[,1])){
-    patient_data[i, phone_column_number] = formatPhone(patient_data[i, phone_column_number])
-  }
-  return(patient_data)
-}
-
-sendBatchTexts = function(generic_message, batch_size){
-  ### Main Function to send text messages to patients
-    ## Updated so batch messages will not go out to the same patient more than once.
-  if (i <= nrow(patient_data)){
-    for (i in (previous_stopping_record + 1):min((previous_stopping_record + 1 + batch_size), nrow(patient_data))){
-      
-      ### Format Messages
-        formatted_message = gsub(pattern = '%name%', replacement = formatName(patient_data$patient_name[i]), x = generic_message)
-        formatted_message = gsub(pattern = '%clinic%', replacement = formatClinic(patient_data$clinic_location[i]), x = formatted_message)
-
-      ### Send Batch Texts
-        ## Format recipient number
-        formatted_number = gsub('+', '', patient_data$patient_number[i])
-        if (substr(formatted_number, start = 1, stop = 1) != 1){
-          formatted_number = paste('1', formatted_number, sep = "", collapse = "")
-        }
-        ### Send Message after making sure we haven't already texted this person
-        if (formatted_number %in% message_log$Patient.Number == FALSE){
-          tw_send_message(from = sender_number, to = formatted_number, body = formatted_message)
-        }
+prioritizePatients = function(patient_data){
+  ## Prioritize Numbers to text based on numbe of individuals in household
+  patient_priority = aggregate(name~patient_number, FUN = uniqueN, data = patient_data)
+  colnames(patient_priority) = c('phone_number', 'n_patients')
+  patient_priority = patient_priority[order(patient_priority$n_patients, decreasing = TRUE), ]
+  
+  ### Check if any numbers have been claimed by other physicians. If they have, exclude them
+  rm_ind = c()
+  for (i in 1:length(patient_priority$phone_number)){
+    if(!all(is.na(patient_data$`Assigned \nProvider`[patient_data$patient_number == patient_priority$phone_number[i]]))){
+      rm_ind = c(rm_ind, i)
     }
-    ## Write out current index for keeping track of where in patient data we currently are
-    write.csv(i, file = 'data/called_index.csv', row.names = FALSE)
-  ## If we run out of records...
-  } else {
-    print('No more patient records in dataset.')
+  }
+  ## Remove any numbers where a patient(s) have already been assigned a provider
+  if(length(rm_ind) > 0){
+    patient_priority = patient_priority[-rm_ind, ]
+  }
+  ## Remove any patients without a phone number
+  patient_priority = patient_priority[patient_priority$phone_number != '0', ]
+  return(patient_priority)
+}
+
+updateProviderSheet = function(sheet_date, patient_data, patient_priority, batch_size){
+  ### Write updated provider and visit data to google sheet
+  ## Find column letter in google sheet by matching known column names 
+  provider_col = toupper(letters[which(grepl('Assigned', colnames(patient_data), fixed = TRUE) & which(grepl('Provider', colnames(patient_data), fixed = TRUE)))])
+  visit_col = toupper(letters[which(grepl('Visit', colnames(patient_data), fixed = TRUE) & which(grepl('Complete', colnames(patient_data), fixed = TRUE)))])
+  
+  ## Grab a batch of patients
+  indicies_to_overwrite = which(patient_data$patient_number %in% patient_priority$phone_number[1:batch_size]) + 1
+  ## loop through indicies
+  for (i in indicies_to_overwrite){
+    # Update assigned provider
+    range_write(file.path('data', config[config$V1 == 'PATIENT_DATA_FILE',2]), sheet = sheet_date, range = paste(provider_col, i, sep = ""), data = data.frame('Assigned Provider' = 'Jim Saunders'), col_names = FALSE)
+    # Update Visit complete
+    range_write(file.path('data', config[config$V1 == 'PATIENT_DATA_FILE',2]), sheet = sheet_date, range = paste(visit_col, i, sep = ""), data = data.frame('Visit Complete' = 'No'), col_names = FALSE)
+  }
+}
+
+restoreProviderSheet = function(sheet_date, number){
+  ### Write updated provider and visit data to google sheet
+  ## Find column letter in google sheet by matching known column names 
+  provider_col = toupper(letters[which(grepl('Assigned', colnames(patient_data), fixed = TRUE) & which(grepl('Provider', colnames(patient_data), fixed = TRUE)))])
+  visit_col = toupper(letters[which(grepl('Visit', colnames(patient_data), fixed = TRUE) & which(grepl('Complete', colnames(patient_data), fixed = TRUE)))])
+  
+  ## Grab a batch of patients
+  indicies_to_overwrite = which(patient_data$patient_number %in% number) + 1
+  ## loop through indicies
+  for (i in indicies_to_overwrite){
+    # Update assigned provider
+    range_write(file.path('data', config[config$V1 == 'PATIENT_DATA_FILE',2]), sheet = sheet_date, range = paste(provider_col, i, sep = ""), data = data.frame('Assigned Provider' = ' '), col_names = FALSE)
+    # Update Visit complete
+    range_write(file.path('data', config[config$V1 == 'PATIENT_DATA_FILE',2]), sheet = sheet_date, range = paste(visit_col, i, sep = ""), data = data.frame('Visit Complete' = ' '), col_names = FALSE)
   }
 }
 
 
+formatMessage = function(number, patient_data, generic_message){
+  ## Subset patient data
+  patients = patient_data[patient_data$patient_number == number, ]
+  ## Define the oldest patient as the primary contact
+  patient_names = sapply(patients$name[order(patients$dob, decreasing = TRUE)], FUN = formatName)
+  primary_name = patient_names[1]
+  
+  ## Format additional patient names. Note wildcard_all as well.
+  if(length(patient_names) == 1){
+    additional_names = ''
+    wildcard_all = ''
+  } else if(length(patient_names) == 2){
+    additional_names = paste(' and', patient_names[2:length(patient_names)], sep = ' ')
+    wildcard_all = 'all '
+  } else {
+    additional_names = paste(', ', paste(paste(patient_names[2:(length(patient_names)-1)], sep = ' ', collapse = ', '), patient_names[length(patient_names)], sep = ', and '), sep = '')
+    wildcard_all = 'all '
+  }
+  
+  ## Generate formatted message
+  generic_message   = batch_message
+  formatted_message = gsub(pattern = "%name%", replacement = primary_name, generic_message)
+  formatted_message = gsub(pattern = "%additional names%", replacement = additional_names, formatted_message)
+  formatted_message = gsub(pattern = "%all%", replacement = wildcard_all, formatted_message)
+  formatted_message = gsub(pattern = "  ", replacement = ' ', formatted_message)
+  return(formatted_message)
+}
 
-updateLog = function(){
+formatPhone = function(number){
+  formatted_number = gsub('+', '', number, fixed = T)
+  formatted_number = gsub(' ', '', formatted_number, fixed = T)
+  ## Make sure we have the country code
+  if (substr(formatted_number, start = 1, stop = 1) != 1){
+    formatted_number = paste('1', formatted_number, sep = "")
+  }
+  return(formatted_number)
+}
+
+sendBatchTexts = function(batch_message, patient_priority, patient_data, batch_size){
+  ## Loop through a batch starting with highest priority phone numbers. For each phone number...
+  for (number in patient_priority$phone_number[1:min(length(patient_priority), batch_size)]){
+
+
+    ### Format phone number for messaging
+    ## Remove an '+'
+   
+    
+    ### Send Message after making sure we haven't already texted this person
+    if (!formatted_number %in% message_log$Number){
+      tw_send_message(from = sender_number, to = formatted_number, body = formatted_message)
+    }
+  }
+}
+
+updateLog = function(patient_data){
+  message_log = read.csv('data/message_log.csv')
+  previous_log = message_log
+  previous_log$message_id = ''
+  for (i in 1:nrow(previous_log)){
+    previous_log$message_id[i] = paste(previous_log$Number[i], 
+                                       paste(strsplit(previous_log$Date[i], split = ':')[[1]][1:2], collapse = ':'),
+                                       previous_log$Body[i], sep = '')
+  }
   ## Get messages from twilio server
   messages <- tw_get_messages_list(page = 0, page_size = 1000)
   ## Parse each message and add it to message log file
@@ -146,23 +241,64 @@ updateLog = function(){
     message_date_fmt = as.POSIXct(paste(c(message_date[1], '-', which(month.abb == message_date[2]), '-', message_date[3], ' ', message_date[4]), collapse = ''), tz = 'UTC')
     local_message_date = format(message_date_fmt, tz=Sys.timezone(),usetz=TRUE)
     
-    ## Get Sender Name, number and message direction
+    ## Get Sender number and message direction
     if(twilio_number == message$from){
       message_direction = 'Outbound'
       patient_number = message$to
+      if(substr(patient_number, start = 1, stop = 1) == '+'){patient_number = substr(patient_number, start = 2, stop = nchar(patient_number))}
     } else {
       message_direction = 'Inbound'
       patient_number = message$from
+      if(substr(patient_number, start = 1, stop = 1) == '+'){patient_number = substr(patient_number, start = 2, stop = nchar(patient_number))}
     }
-    patient_name = patient_data$patient_name[patient_data$patient_number == patient_number][1]
+    
+    ## Get patient_name
+    patient_name = patient_data$name[patient_data$patient_number == patient_number][1]
+    if (length(patient_name)){
+      patient_name = 'Unknown'
+    }
     
     ## Extract message body
     message_body = message$body
-    message_log = unique(rbind(c(patient_name, patient_number, local_message_date, message_direction, message_body), message_log))
+    
+    ### Assign Read Status
+    ## Default to square emoji indicating message is unseen
+    read_status = "\U0001f532"
+    ## If we sent the message, mark it as read
+    if(message_direction == 'Outbound'){read_status = "\u2705"}
+    
+    ## Check if message is already in the log, if not, add it
+    message_id = paste(patient_number, paste(strsplit(local_message_date, split = ':')[[1]][1:2], collapse = ':'), message_body, sep = '')
+    ## if message id is not in previous log, we'll add it
+    if(!message_id %in% previous_log$message_id){
+      ## Write out new message log
+      message_log = data.frame(unique(rbind(c(read_status, patient_name, patient_number, local_message_date, message_direction, message_body), message_log)))
+        colnames(message_log) = c("Read", "Name", "Number", "Date", "Direction", "Body")
+    }
   }
-  message_log = message_log[order(message_log$Datetime, decreasing = TRUE), ]
+  message_log = message_log[order(message_log$Date, decreasing = TRUE), ]
   write.csv(message_log, file = 'data/message_log.csv', row.names = FALSE)
   return(message_log)
 }
 
+markMessagesRead = function(){
+  message_log = read.csv('data/message_log.csv')
+  message_log$Read = "\u2705"
+  write.csv(message_log, file = 'data/message_log.csv', row.names = FALSE)
+  return(message_log)
+}
 
+### The following function has been pulled straight from the gargle package in case gargle isn't working
+request_retry = function (..., max_tries_total = 5, max_total_wait_time_in_seconds = 100) 
+{
+  resp <- request_make(...)
+  tries_made <- 1
+  b <- calculate_base_wait(n_waits = max_tries_total - 1, total_wait_time = max_total_wait_time_in_seconds)
+  while (we_should_retry(tries_made, max_tries_total, resp)) {
+    wait_time <- backoff(tries_made, resp, base = b)
+    Sys.sleep(wait_time)
+    resp <- request_make(...)
+    tries_made <- tries_made + 1
+  }
+  invisible(resp)
+}

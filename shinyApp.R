@@ -9,13 +9,13 @@
 ## Written by Steve Scherrer on 27 Nov 2020
 
 
-##### TODO: 
-    # Should we pre-sort patient info somehow (like by date they got covid test) before batch sending?
 rm(list = ls())
 
 library('shiny')
 source('src/HelperFunctions.R')
 
+patient_data = importPatientData('11.19')
+current_sheetdate = paste(strsplit(as.character(Sys.Date()), split = '-')[[1]][c(2,3)], collapse = '.')
 
 ##### Application logic goes here
 
@@ -29,7 +29,11 @@ ui <- fluidPage(
     sidebarLayout(
         sidebarPanel(
             h3("Batch Message Patients"),
-            textAreaInput(inputId = "batch_message", label = "Batch Message: %name% and %clinic% wildcards will be replaced from patient records", value = "Hi %name%, this is Dr. Saunders calling on behalf of %clinic%. I would like to discuss any symptoms of COVID-19 you may have or be currently experiencing. Are you available for a phone screen at no personal cost?", height = '120px'),
+            ## Specify Sheet
+            textAreaInput(inputId = "sheet_name", label = 'Date Label of Google Sheet', value = current_sheetdate, height = '40px'),
+            
+            ## Default Message Area
+            textAreaInput(inputId = "batch_message", label = "Batch Message: %name%, %additional names%, and %all% wildcards will be replaced from patient records", value = "Hi %name%, this is Dr. Saunders from Starmed Healthcare, you reached out to be tested and I wanted to offer a brief telemedicine visit to check in on you %additional names% regarding any concerns or symptoms you %all% may have as part of this care. If it's alright, I'll send you a secure encrypted link through Doximity and can meet you %all% shortly.  Would that be ok?", height = '120px'),
             sliderInput("batch_size",
                         "How texts do you want to send?",
                         min = 1,
@@ -37,14 +41,15 @@ ui <- fluidPage(
                         value = 10),
             actionButton("send_batch", "Send Batch Messages"),
             
-            div(style="margin-bottom:10px"),
-            
+            ## Individual Responses
             h3("Send Individual Response"),
             textInput(inputId = "reply_number", label = "Reply Number", value = "+1XXXXXXXXX"),
             textAreaInput(inputId = "reply_message", label = "Reply Message", value = 'Response', height = '100px'),
             actionButton("patient_reply", "Reply to Patient"),
             
-  
+            ## Mark Messages as Read
+            actionButton("mark_as_read", "Mark Messages As Read")
+            
         ),
 
         # Show a plot of the generated distribution
@@ -57,61 +62,82 @@ ui <- fluidPage(
 # Define server logic required to draw a histogram
 server = function(input, output) {
     
+  #### Immediately Render Message Viewer
     output$tbl = renderDT(
         message_log, options = list(lengthChange = FALSE)
     )
     
-    #### Check for new messages by re-rendering log every 30 seconds
+    #### Logic to Refresh Message Viewer every 30 seconds
     autoInvalidate <- reactiveTimer(30000)
-    
     observe({
         autoInvalidate()
         ## Check for an update to the message log
-        updated_log = updateLog()
-        ## Compare rows in updated log file to current message log. If tehy're not the same, rerender and update message log
-        if (dim(message_log)[1] != dim(updated_log)[1]){
-            message_log = updated_log
-            output$tbl = renderDT(
-                message_log, options = list(lengthChange = FALSE)
-            )
-            beep(10)
-        }
+        message_log = updateLog(patient_data)
+        output$tbl = renderDT(
+            message_log, options = list(lengthChange = FALSE)
+        )
     })
     
     ### Logic for batch texting
     observeEvent(input$send_batch, {
-        ## Format sender number
-        sender_number = gsub('+', '', twilio_number)
-        ## Send formatted input$batch_message to input$batch_size number of patients
-        sendBatchTexts(input$batch_message, input$batch_size)
-        ## update message log
-        message_log = updateLog()
-        ## update viewer
-        output$tbl = renderDT(
-            message_log, options = list(lengthChange = FALSE)
-        )
-        ## Make a noise
-        beep(5)
+      #### Sending batch messages
+      # Format sender number
+      sender_number = formatPhone(twilio_number)
+      ## Pull latest patient records from google sheets - To avoid possible conflicts with other doctors editing the sheet 
+      patient_data = importPatientData(input$sheet_name)
+      ## Prioritize numbers to text based on number of patients with that number 
+      patient_priority = prioritizePatients(patient_data)
+      ## Update the provider sheet - Block off patients for Jim and Change visit to no
+      updateProviderSheet(input$sheet_name, patient_data, patient_priority, input$batch_size)
+      ### Send Batch Messages - send formatted input$batch_message to input$batch_size number of patients
+      ## Loop through each number
+      for (number in patient_priority$phone_number[1:min(nrow(patient_priority), input$batch_size)]){
+        # Format message and recipient phone number
+        formatted_message = formatMessage(number, patient_data, input$batch_message)
+        recipient_number = formatPhone(number)
+        ## If recipient isn't already in the message log
+        if (!recipient_number %in% message_log$Number){
+          # try sending a text. If you get an error, restore the provider sheet
+          tryCatch(
+          expr = tw_send_message(from = sender_number, to = recipient_number, body = formatted_message),
+          error = function(e){restoreProviderSheet(input$sheet_name, number)},
+          warning = function(e) {print(e[1])},
+          finally = function(e){}
+          )
+        }
+      }
+      ## Update the message log
+      message_log = updateLog(patient_data)
+      ## Refresh Message Log Viewer
+      output$tbl = renderDT(
+          message_log, options = list(lengthChange = FALSE)
+      )
     })
     
     ### Logic to handle individual responses
     observeEvent(input$patient_reply, {
         ## Format sender and recipient numbers
-        sender_number = gsub('+', '', twilio_number)
-        recipient_number = gsub('+', '', input$reply_number)
+        sender_number = formatPhone(twilio_number)
+        recipient_number = formatPhone(input$reply_number)
         ## Send response message
         tw_send_message(from = sender_number, to = recipient_number, body = input$reply_message)
         ## Update message log
-        message_log = updateLog()
-        ## update viewer
+        message_log = updateLog(patient_data)
+        ## Refresh message log viewer
         output$tbl = renderDT(
             message_log, options = list(lengthChange = FALSE)
         )
-        beep(1)
     })
     
+    ## Logic to Mark All Messages in Inbox as Read
+    observeEvent(input$mark_as_read, {
+      message_log = markMessagesRead()
+      ## Refresh Message Log Viewer
+      output$tbl = renderDT(
+        message_log, options = list(lengthChange = FALSE)
+      )
+    })
 }
 
 # Run the application 
 shinyApp(ui = ui, server = server)
-

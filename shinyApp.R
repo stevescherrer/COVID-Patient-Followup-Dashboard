@@ -12,18 +12,23 @@
 rm(list = ls())
 
 library('shiny')
-source('src/HelperFunctions.R')
+library('shinythemes')
+library('shinydashboard')
+
+source('src/HelperFunctions-BatchMessenging.R')
+source('src/HelperFunctions-WritingCharts.R')
 
 patient_data = importPatientData('11.19')
-current_sheetdate = paste(strsplit(as.character(Sys.Date()), split = '-')[[1]][c(2,3)], collapse = '.')
+current_sheetdate = getCurrentSheetDate()
 
 ##### Application logic goes here
 
 # Define UI for application that draws a histogram
-ui <- fluidPage(
+## Set up navigation bar
+ui <- navbarPage('Tele-Dashboard', theme = shinytheme('flatly'),
 
-    # Application title
-    titlePanel("Patient Follow Up Interface"),
+    # Tab title
+    tabPanel("Messenger",
 
     # Sidebar with a slider input for number of bins 
     sidebarLayout(
@@ -35,10 +40,11 @@ ui <- fluidPage(
             ## Default Message Area
             textAreaInput(inputId = "batch_message", label = "Batch Message: %name%, %additional names%, and %all% wildcards will be replaced from patient records", value = "Hi %name%, this is Dr. Saunders from Starmed Healthcare, you reached out to be tested and I wanted to offer a brief telemedicine visit to check in on you %additional names% regarding any concerns or symptoms you %all% may have as part of this care. If it's alright, I'll send you a secure encrypted link through Doximity and can meet you %all% shortly.  Would that be ok?", height = '120px'),
             sliderInput("batch_size",
-                        "How texts do you want to send?",
+                        "Approx. how many patients do you want to see?",
                         min = 1,
                         max = 100,
                         value = 10),
+            sliderInput('batch_limit', "Limit to n patients per number", min = 1, max = 20, value = 20),
             actionButton("send_batch", "Send Batch Messages"),
             
             ## Individual Responses
@@ -57,7 +63,13 @@ ui <- fluidPage(
             fluidPage(DTOutput('tbl'))
         )
     )
+),
+tabPanel("Patient Visit", 
+         h3('Exmination Records'),
+         actionButton("writeExamRecords", "Write Patient Charts to PDF")
+         )
 )
+
 
 # Define server logic required to draw a histogram
 server = function(input, output) {
@@ -86,23 +98,26 @@ server = function(input, output) {
       ## Pull latest patient records from google sheets - To avoid possible conflicts with other doctors editing the sheet 
       patient_data = importPatientData(input$sheet_name)
       ## Prioritize numbers to text based on number of patients with that number 
-      patient_priority = prioritizePatients(patient_data)
+      patient_priority = prioritizePatients(patient_data, limit = input$batch_limit)
+      ## Define a batch size by number of patients
+      n_patients = defineBatchSize(patient_priority, input$batch_size)
       ## Update the provider sheet - Block off patients for Jim and Change visit to no
-      updateProviderSheet(input$sheet_name, patient_data, patient_priority, input$batch_size)
-      ### Send Batch Messages - send formatted input$batch_message to input$batch_size number of patients
+      updateProviderSheet(input$sheet_name, patient_data, patient_priority, n_patients)
+      ### Send Batch Messages - send formatted input$batch_message to n_patients number of patients
       ## Loop through each number
-      for (number in patient_priority$phone_number[1:min(nrow(patient_priority), input$batch_size)]){
+      for (number in patient_priority$phone_number[1:min(nrow(patient_priority), n_patients)]){
         # Format message and recipient phone number
         formatted_message = formatMessage(number, patient_data, input$batch_message)
         recipient_number = formatPhone(number)
         ## If recipient isn't already in the message log
         if (!recipient_number %in% message_log$Number){
+          print(recipient_number)
           # try sending a text. If you get an error, restore the provider sheet
           tryCatch(
           expr = tw_send_message(from = sender_number, to = recipient_number, body = formatted_message),
-          error = function(e){restoreProviderSheet(input$sheet_name, number)},
-          warning = function(e) {print(e[1])},
-          finally = function(e){}
+          error = function(e){print('error'); restoreProviderSheet(input$sheet_name, number)},
+          warning = function(e) {print('warning')},
+          finally = function(e){print('finally')}
           )
         }
       }
@@ -137,6 +152,13 @@ server = function(input, output) {
         message_log, options = list(lengthChange = FALSE)
       )
     })
+    
+    ### TAB 2 - Writing Patient Charts
+    observeEvent(input$writeExamRecords, {
+      chartPatientsFromSheet()
+    })
+
+    
 }
 
 # Run the application 

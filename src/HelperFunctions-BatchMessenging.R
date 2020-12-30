@@ -15,7 +15,8 @@ packages = c(
   'beepr',
   'data.table',
   'googlesheets4',
-  'emojifont'
+  'emojifont',
+  'rmarkdown'
 )
 
 ### The first time you run this application, first run the following commands
@@ -31,6 +32,8 @@ for (package in packages){
   library(package, character.only = TRUE)
 }
 
+
+#### Tab 1: Messenging
 ### Import config details
 config = read.csv('src/config.csv', header = FALSE)
 ## Set system enviornment variables
@@ -112,11 +115,14 @@ formatClinic = function(clinic){
   return(paste(split_clinic, collapse = ' '))
 }
 
-prioritizePatients = function(patient_data){
+prioritizePatients = function(patient_data, limit = 100){
   ## Prioritize Numbers to text based on numbe of individuals in household
   patient_priority = aggregate(name~patient_number, FUN = uniqueN, data = patient_data)
   colnames(patient_priority) = c('phone_number', 'n_patients')
   patient_priority = patient_priority[order(patient_priority$n_patients, decreasing = TRUE), ]
+  
+  ## limit batched numbers to fewer than X patients per number
+  patient_priority = patient_priority[patient_priority$n_patients <= limit, ]
   
   ### Check if any numbers have been claimed by other physicians. If they have, exclude them
   rm_ind = c()
@@ -174,6 +180,7 @@ formatMessage = function(number, patient_data, generic_message){
   patients = patient_data[patient_data$patient_number == number, ]
   ## Define the oldest patient as the primary contact
   patient_names = sapply(patients$name[order(patients$dob, decreasing = TRUE)], FUN = formatName)
+  patient_names = unique(patient_names[1:length(patient_names)])
   primary_name = patient_names[1]
   
   ## Format additional patient names. Note wildcard_all as well.
@@ -189,11 +196,12 @@ formatMessage = function(number, patient_data, generic_message){
   }
   
   ## Generate formatted message
-  generic_message   = batch_message
   formatted_message = gsub(pattern = "%name%", replacement = primary_name, generic_message)
   formatted_message = gsub(pattern = "%additional names%", replacement = additional_names, formatted_message)
   formatted_message = gsub(pattern = "%all%", replacement = wildcard_all, formatted_message)
   formatted_message = gsub(pattern = "  ", replacement = ' ', formatted_message)
+  formatted_message = gsub(pattern = " ,", replacement = ',', formatted_message)
+  
   return(formatted_message)
 }
 
@@ -225,6 +233,7 @@ sendBatchTexts = function(batch_message, patient_priority, patient_data, batch_s
 
 updateLog = function(patient_data){
   message_log = read.csv('data/message_log.csv')
+  message_log$Read[message_log$Read == "<U+2705>"] = "\u2705"
   previous_log = message_log
   previous_log$message_id = ''
   for (i in 1:nrow(previous_log)){
@@ -263,7 +272,7 @@ updateLog = function(patient_data){
     
     ### Assign Read Status
     ## Default to square emoji indicating message is unseen
-    read_status = "\U0001f532"
+    read_status = " "
     ## If we sent the message, mark it as read
     if(message_direction == 'Outbound'){read_status = "\u2705"}
     
@@ -276,7 +285,20 @@ updateLog = function(patient_data){
         colnames(message_log) = c("Read", "Name", "Number", "Date", "Direction", "Body")
     }
   }
+  
+  ## Backfill names already in the log
+  for (i in 1:length(message_log$Name)){
+    # Match this message to all other messages by phone number
+    message_subset = message_log[message_log$Number == message_log$Number[i], ]
+    # if matching numbers have a name, update this log file
+    if(any(message_subset$Name != 'Unknown')){
+      message_log$Name[i] = unique(message_subset$Name[message_subset$Name != 'Unknown'])[1]
+    }
+  }
+  
+  ## Reorder message log
   message_log = message_log[order(message_log$Date, decreasing = TRUE), ]
+  ## Write log out
   write.csv(message_log, file = 'data/message_log.csv', row.names = FALSE)
   return(message_log)
 }
@@ -302,3 +324,31 @@ request_retry = function (..., max_tries_total = 5, max_total_wait_time_in_secon
   }
   invisible(resp)
 }
+
+getCurrentSheetDate = function(){
+  current_sheetdate = strsplit(as.character(Sys.Date()), split = '-')[[1]][c(2,3)]
+  ## format month
+  if(substr(current_sheetdate[1], start = 1, stop = 1) == 0){
+    current_sheetdate[1] = substr(current_sheetdate[1], start = 2, stop = 2)
+  }
+  ## format day
+  if(substr(current_sheetdate[2], start = 1, stop = 1) == 0){
+    current_sheetdate[2] = substr(current_sheetdate[2], start = 2, stop = 2)
+  }
+  ## paste together
+  current_sheetdate = paste(current_sheetdate, collapse = '.')
+  return(current_sheetdate)
+}
+
+defineBatchSize = function(patient_priority, batch_size){
+  n_patients = 0
+  i = 0
+  while(n_patients < batch_size & i <= nrow(patient_priority)){
+    i = i+1
+    n_patients = n_patients + patient_priority$n_patients[i]
+  }
+  return(i)
+}
+
+
+

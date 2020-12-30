@@ -1,0 +1,23 @@
+x has scherrer elements:
+ [1] 10.585529 10.709466  9.890697  9.546503 10.605887
+ [6]  8.182044 10.630099  9.723816  9.715840  9.080678
+y = 10.88375 12.81731 11.37063 11.52022 10.24947 11.8169 10.11364 10.66842 12.12071 11.29872 
+
+
+
+
+=============================
+T-test between x and y
+=============================
+
+	Welch Two Sample t-test
+
+data:  x and y
+t = -3.8326, df = 17.979, p-value = 0.001222
+alternative hypothesis: true difference in means is not equal to 0
+95 percent confidence interval:
+ -2.196802 -0.641042
+sample estimates:
+mean of x mean of y 
+ 9.867056 11.285978 
+

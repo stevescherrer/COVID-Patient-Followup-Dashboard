@@ -23,7 +23,7 @@ writePatientChart = function(record){
   {
     cat("PATIENT CHART \n============================================== \n")
     if(!is.null(record$dos)){
-      cat(paste('Date: ', formatDOB(record$dos), ' \n', sep = ''))
+      cat(paste('Date of Service: ', formatDOB(record$dos), ' \n', sep = ''))
     }
     cat(paste('Patient Name: ', formatName(record$last_name), ', ', formatName(record$first_name), ' \n', sep = ''))
     cat(paste('Date of Birth:', formatDOB(record$dob), " \n", sep = ' '))
@@ -287,9 +287,9 @@ writePatientChart = function(record){
   \\pagestyle{fancy}
   \\fancyfoot[LE,RO]{%s}
   \\fancyfoot[CO,CE]{\\thepage}
-  ', paste(record$last_name, record$first_name, gsub('/', '', record$dob), sep = "")), "exam records/header.tex")
+  ', paste(record$last_name, record$first_name, gsub('/', '', record$dob), sep = "")), "exam records/header.tex", useBytes = T)
   
-  text = readLines(file.path('exam records', paste(record_name, '.txt', sep = "")))
+  text = readLines(file.path('exam records', paste(record_name, '.txt', sep = "")), encoding = 'UTF-8')
   cat(text, sep = " \n", file = file.path('exam records', paste(record_name, '.Rmd', sep = "")))
   render(file.path('exam records', paste(record_name, '.Rmd', sep = "")),clean = TRUE, pdf_document(includes = includes(in_header = 'header.tex')))
   ## Removing support files
@@ -403,18 +403,19 @@ chartPatientsFromSheet = function(){
       if(!is.na(record$symptomatic_type) & record$symptomatic_type != 'NULL'){
         ## Reformat record
         record = formatRecordColumns(record)
-        ## Get record location for writing chart name to google sheet 
-        cell_pos = cell_limits(ul = c(156,i+7), lr = c(156,i+7)) # get cell position to write
-        ## Write chart
-        writeChart = function(rec, pos){
-          record_name = writePatientChart(rec)
-          print(record_name)
-          range_write(config[config$V1 == 'PATIENT_CHARTS_SHEET',2], sheet = 'Sheet1', range = pos, data = data.frame(record_name), col_names = FALSE)
-        }
+        ## Get a name for the chart
+        record_name = paste(substr(record$first_name, 1, 1), substr(record$last_name,1,1), gsub("/", "", record$dob), gsub("-", "", record$exam_date), sep = "")
+        ## Write patient chart
+        print(record_name)
         tryCatch(
-          expr = writeChart(record, cell_pos),
+          expr = writePatientChart(record),
           error = function(e){print(paste('Error writing record for', record$name))}
         )
+        ## If we've written a patient's chart, update the spreadsheet with chartname
+        if(file.exists(paste('exam records/', record_name, '.pdf', sep = ''))){
+          cell_pos = cell_limits(ul = c(156,i+7), lr = c(156,i+7)) # get cell position to write
+          range_write(config[config$V1 == 'PATIENT_CHARTS_SHEET', 2], sheet = 'Sheet1', range = cell_pos, data = data.frame(record_name), col_names = FALSE)
+        }
       }
     }
   }

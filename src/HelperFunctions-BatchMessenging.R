@@ -16,7 +16,8 @@ packages = c(
   'data.table',
   'googlesheets4',
   'emojifont',
-  'rmarkdown'
+  'rmarkdown',
+  'readxl'
 )
 
 ### The first time you run this application, first run the following commands
@@ -52,29 +53,40 @@ twilio_number = paste('+', config[config$V1 == 'TWILIO_NUMBER',2], sep = '', col
 #################### Helper Functions ####################
 ##########################################################
 
-importPatientData = function(sheet_date = '11.19'){
+importPatientData = function(sheet_date = 1){
   ## Default sheet date is 11.19 because I know it works
   patient_data = read_sheet(file.path('data', config[config$V1 == 'PATIENT_DATA_FILE',2]), sheet = sheet_date)
-
-  colnames(patient_data)[which(grepl('Patient Name', colnames(patient_data), fixed = TRUE))] = 'patient_name'
-  colnames(patient_data)[which(grepl('DOB', colnames(patient_data), fixed = TRUE))] = 'dob'
-  colnames(patient_data)[which(grepl('Phone', colnames(patient_data), fixed = TRUE))] = 'number'
-  
-  ## Extract patient name from patient_name colum
-  patient_data$name = NA
-  for(i in 1:nrow(patient_data)){
-    if(!is.null(patient_data$patient_name[i][[1]])){
-      patient_data$name[i] = unlist(patient_data$patient_name[i])
+  if(dim(patient_data)[1] > 0){ # don't do anything if there's no data
+    colnames(patient_data)[which(grepl('Patient Name', colnames(patient_data), fixed = TRUE))] = 'patient_name'
+    colnames(patient_data)[which(grepl('DOB', colnames(patient_data), fixed = TRUE))] = 'dob'
+    colnames(patient_data)[which(grepl('Phone', colnames(patient_data), fixed = TRUE))] = 'number'
+    
+    ## Extract patient name from patient_name colum
+    patient_data$name = NA
+    for(i in 1:nrow(patient_data)){
+      if(!is.null(patient_data$patient_name[i][[1]])){
+        patient_data$name[i] = unlist(patient_data$patient_name[i])
+      }
+    }
+    
+    ## Extract patient phonenumber from number colum
+    patient_data$patient_number = NA
+    colnum = findPhoneColumn(patient_data)
+    
+    for(i in 1:nrow(patient_data)){
+      if(!is.null(patient_data$number[i][[1]])){
+        patient_data$patient_number[i] = unlist(patient_data[i,colnum])
+      }
+    }
+    
+    if (class(patient_data$dob[1])[1] == 'list'){
+      patient_data$dob = unlist(patient_data$dob)
     }
   }
+  ## Remove patients missing things
+  patient_data = patient_data[!is.na(patient_data$patient_number), ]
+  patient_data = patient_data[!is.na(patient_data$name), ]
   
-  ## Extract patient phonenumber from number colum
-  patient_data$patient_number = NA
-  for(i in 1:nrow(patient_data)){
-    if(!is.null(patient_data$number[i][[1]])){
-      patient_data$patient_number[i] = unlist(patient_data$number[i])
-    }
-  }
   return(patient_data)
 }
 
@@ -125,9 +137,12 @@ prioritizePatients = function(patient_data, limit = 100){
   patient_priority = patient_priority[patient_priority$n_patients <= limit, ]
   
   ### Check if any numbers have been claimed by other physicians. If they have, exclude them
+  
+  provider_col = which(grepl('Assigned', colnames(patient_data), fixed = TRUE) & which(grepl('Provider', colnames(patient_data), fixed = TRUE)))
+  print('provider_col_fetched')
   rm_ind = c()
   for (i in 1:length(patient_priority$phone_number)){
-    if(!all(is.na(patient_data$`Assigned \nProvider`[patient_data$patient_number == patient_priority$phone_number[i]]))){
+    if(!all(is.na(patient_data[patient_data$patient_number == patient_priority$phone_number[i], provider_col]))){
       rm_ind = c(rm_ind, i)
     }
   }
@@ -137,17 +152,24 @@ prioritizePatients = function(patient_data, limit = 100){
   }
   ## Remove any patients without a phone number
   patient_priority = patient_priority[patient_priority$phone_number != '0', ]
+  print('patient_prioritized')
   return(patient_priority)
 }
 
-updateProviderSheet = function(sheet_date, patient_data, patient_priority, batch_size){
+updateProviderSheet = function(sheet_date, patient_data, patient_priority = NULL, batch_size = 1, number = NULL){
   ### Write updated provider and visit data to google sheet
   ## Find column letter in google sheet by matching known column names 
   provider_col = toupper(letters[which(grepl('Assigned', colnames(patient_data), fixed = TRUE) & which(grepl('Provider', colnames(patient_data), fixed = TRUE)))])
   visit_col = toupper(letters[which(grepl('Visit', colnames(patient_data), fixed = TRUE) & which(grepl('Complete', colnames(patient_data), fixed = TRUE)))])
   
-  ## Grab a batch of patients
-  indicies_to_overwrite = which(patient_data$patient_number %in% patient_priority$phone_number[1:batch_size]) + 1
+  ## If we hand the function a single number, we'll update and mark off patients with that number. If we've given it multiple numbers, in the form of a patient priority file, we'll update using the patient priority file instead (the latter being faster) 
+  if (is.null(number)){
+    ## Grab a batch of patients
+    indicies_to_overwrite = which(unlist(lapply(patient_data$patient_number, FUN = formatPhone)) %in% patient_priority$phone_number[1:batch_size]) + 1
+  } else {
+    ## Overwrite a single number
+    indicies_to_overwrite = which(unlist(lapply(patient_data$patient_number, FUN = formatPhone)) %in% number[batch_size]) + 1
+  }
   ## loop through indicies
   for (i in indicies_to_overwrite){
     # Update assigned provider
@@ -329,11 +351,11 @@ getCurrentSheetDate = function(){
   current_sheetdate = strsplit(as.character(Sys.Date()), split = '-')[[1]][c(2,3)]
   ## format month
   if(substr(current_sheetdate[1], start = 1, stop = 1) == 0){
-    current_sheetdate[1] = substr(current_sheetdate[1], start = 2, stop = 2)
+    # current_sheetdate[1] = substr(current_sheetdate[1], start = 2, stop = 2)
   }
   ## format day
   if(substr(current_sheetdate[2], start = 1, stop = 1) == 0){
-    current_sheetdate[2] = substr(current_sheetdate[2], start = 2, stop = 2)
+    # current_sheetdate[2] = substr(current_sheetdate[2], start = 2, stop = 2)
   }
   ## paste together
   current_sheetdate = paste(current_sheetdate, collapse = '.')
@@ -349,6 +371,131 @@ defineBatchSize = function(patient_priority, batch_size){
   }
   return(i)
 }
+
+
+importPositivePatients = function(xlsx_file, day_range = c(NULL, NULL)){
+  ## Helper function for importing and cleaning positive patient files
+  positive_patients = as.data.frame(read_excel(xlsx_file))
+  ## Drop patients without names and/or phone numbers
+  positive_patients = positive_patients[!is.na(positive_patients$`First Name`), ]
+  positive_patients = positive_patients[!is.na(positive_patients$`Last Name`), ]
+  positive_patients = positive_patients[!is.na(positive_patients$Mobile), ]
+  ## Format a column 'name'
+  positive_patients$name = ''
+  for (i in 1:length(positive_patients$`First Name`)){
+    positive_patients$name[i] = paste(positive_patients$`First Name`[i], positive_patients$`Last Name`[i], sep = ' ')
+  }
+  ## Format patient phone numbers
+  positive_patients$patient_number = ''
+  for (i in 1:length(positive_patients$Mobile)){
+    positive_patients$patient_number[i] = formatPhone(positive_patients$Mobile[i])
+  }
+ 
+  ## Make every colname lowercase
+  for (i in 1:length(colnames(positive_patients))){
+    colnames(positive_patients)[i] = tolower(colnames(positive_patients)[i])
+  }
+  
+  ## remove patients outside of the date range
+  if(!class(positive_patients$date)[1] == "POSIXct"){
+    for(i in positive_patients$date){
+      positive_patients$date[i] = as.POSIXct(positive_patients$date[i], format = '%m/%d/%y')
+    }
+  }
+  
+  current_date = Sys.time()
+  value_of_a_day = 60 * 60 * 24
+  if(!is.null(day_range[1])){
+    positive_patients = positive_patients[positive_patients$date <= current_date - (value_of_a_day * day_range[1]), ]
+  }
+  if(!is.null(day_range[2])){
+    positive_patients = positive_patients[positive_patients$date <= current_date - (value_of_a_day * day_range[2]), ]
+  }
+  return(positive_patients)
+}
+
+### Get all sheet names
+getSheetNames = function(url){
+  ## Helper function for extracting all daily case sheets from google doc
+  sheet_meta = gs4_get(url)
+  ## Loop through each sheet name and check if it is a date (will start with a number), if it is a date, return it
+  sheet_names = c()
+  for (sheet_name in sheet_meta$sheets$name){
+    if(substr(sheet_name, 1, 1) %in% as.character(0:9)){
+      sheet_names = c(sheet_names, sheet_name)
+    }
+  }
+  return(sheet_names)
+}
+
+### Search through sheets for a number
+findPatientInSheets = function(number, url = config[config$V1 == 'PATIENT_DATA_FILE',2]){
+  ### Search through sheets for a number, then mark them off with jim's provider info
+  ## Get all sheet names
+  sheet_names = getSheetNames(url) 
+  ## Format the phone number
+  number = formatPhone(number)
+  ## create a variable that we will update if we find a match
+  matching_sheet = list()
+  matching_sheet$data = NULL
+  matching_sheet$sheet_name = NULL
+  
+  ## Loop through all sheets in reverse looking for a match
+  for (sheet in rev(sheet_names)){
+    ## Import sheet 
+    sheet_to_check = importPatientData(sheet_date = sheet)
+      if(dim(sheet_to_check)[1] > 0){ # Don't bother checking if there's nothing in this sheet
+        ## Check for corrosponding number
+        if(number %in% unlist(lapply(sheet_to_check$patient_number, FUN = formatPhone))){
+          ## if we find it, update matching_sheet variable and Stop looking for matches
+          matching_sheet$sheet_name = sheet
+          matching_sheet$data = sheet_to_check
+          return(matching_sheet)
+        }
+      }
+    }
+  return(matching_sheet)
+}
+
+
+findPhoneColumn = function(patient_data){
+  cols = lapply(colnames(patient_data), FUN = strsplit, split = " ")
+  for(i in 1:length(cols)){
+    col = cols[i]
+    if ('phone' %in% tolower(unlist(col[[1]])) | 'number' %in% tolower(unlist(col[[1]]))){
+      return (i)
+    }
+  }
+  return(NULL)
+}
+
+
+updateProviderNotes = function(sheet_date, patient_data, patient_priority = NULL, batch_size = 1, number = NULL){
+  ### Write updated provider and visit data to google sheet
+  ## Find column letter in google sheet by matching known column names 
+  notes_col = toupper(letters[which(grepl('Notes', colnames(patient_data), fixed = TRUE))])
+
+  ## If we hand the function a single number, we'll update and mark off patients with that number. If we've given it multiple numbers, in the form of a patient priority file, we'll update using the patient priority file instead (the latter being faster) 
+  if (is.null(number)){
+    ## Grab a batch of patients
+    indicies_to_overwrite = which(unlist(lapply(patient_data$patient_number, FUN = formatPhone)) %in% patient_priority$phone_number[1:batch_size]) + 1
+  } else {
+    ## Overwrite a single number
+    indicies_to_overwrite = which(unlist(lapply(patient_data$patient_number, FUN = formatPhone)) %in% number[batch_size]) + 1
+  }
+  
+  ## loop through indicies
+  for (i in indicies_to_overwrite){
+    if(is.na(patient_data$Notes[indicies_to_overwrite[i]])){
+      new_note = 'Followup following positive diagnosis by Jim Saunders'
+    } else {
+      new_note = paste(patient_data$Notes[indicies_to_overwrite[i]], 'Followup following positive diagnosis peformed by Jim Saunders', sep = ' -- ')
+    }
+    # Update Notes provider
+    range_write(file.path('data', config[config$V1 == 'PATIENT_DATA_FILE',2]), sheet = sheet_date, range = paste(notes_col, i, sep = ""), data = data.frame('Notes' = new_note), col_names = FALSE)
+   }
+}
+
 
 
 
